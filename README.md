@@ -4,7 +4,9 @@
 
 A utility for versioning SQL Server stored procedures.
 
-Given a database name and credentials for accessing it, will save all stored procedures to a local directory which will also be initialied with a git repository. When run again on the same database, any changes to stored procedures will be committed to git.
+Given a database name and credentials for accessing it, will save all stored procedures to a local directory which will also be initialised with a git repository.
+
+When run again on the same database, any changes that have been made to the database's stored procedures will be committed to git.
 
 ## Requirements
 
