@@ -1,24 +1,33 @@
 package main
 
 import (
-	// "database/sql"
 	"bufio"
 	"errors"
 	"flag"
 	"fmt"
 	"github.com/jmoiron/sqlx"
+	"github.com/libgit2/git2go"
 	_ "github.com/minus5/gofreetds"
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
+	"time"
 )
 
+// config holds database, output location & git config
 type config struct {
-	db     dbConfig
+	db dbConfig
+	// Full path to the directory where SPs should be saved
 	outDir string
+	// User name to use when committing
+	gitName string
+	// Email address to use when committing
+	gitEmail string
 }
 
+// isValid checks if the config is valid.
 func (c *config) isValid() error {
 	if len(c.outDir) == 0 {
 		return errors.New("Missing output directory")
@@ -28,9 +37,18 @@ func (c *config) isValid() error {
 		return errors.New("Output directory does not exist")
 	}
 
+	if len(c.gitName) == 0 {
+		return errors.New("No git username provided")
+	}
+
+	if len(c.gitEmail) == 0 {
+		return errors.New("No git email provided")
+	}
+
 	return c.db.isValid()
 }
 
+// dbConfig holds config that is specific to the database server.
 type dbConfig struct {
 	host     string
 	database string
@@ -38,6 +56,7 @@ type dbConfig struct {
 	password string
 }
 
+// isValid checks if the config is valid.
 func (c *dbConfig) isValid() error {
 	if len(c.host) == 0 {
 		return errors.New("Missing host")
@@ -50,10 +69,12 @@ func (c *dbConfig) isValid() error {
 	return nil
 }
 
+// connectionString converts the config to a connection string.
 func (c *dbConfig) connectionString() string {
 	return fmt.Sprintf("host=%v;database=%v;user=%v;pwd=%v", c.host, c.database, c.user, c.password)
 }
 
+// Global config variable
 var conf = config{}
 
 func init() {
@@ -62,8 +83,11 @@ func init() {
 	flag.StringVar(&conf.db.user, "u", "sa", "database username")
 	flag.StringVar(&conf.db.password, "p", "", "database password")
 	flag.StringVar(&conf.outDir, "o", "", "output directory")
+	flag.StringVar(&conf.gitName, "n", "spkeeper", "git commit name")
+	flag.StringVar(&conf.gitEmail, "e", "spkeeper@example.com", "git commit email")
 }
 
+// checkFatal will exit with an error status when given a non-nil error
 func checkFatal(err error) {
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
@@ -119,13 +143,17 @@ func writeProcedureBody(db *sqlx.DB, name string, w io.Writer) (err error) {
 }
 
 // spSaver receives a stored procedure name on the names chan, saves the body of the named procedure
-// to disk and returns any error on the results chan
+// to disk and returns any error on the results chan.
 func spSaver(db *sqlx.DB, outDir string, names <-chan string, results chan<- error) {
 	for n := range names {
 		results <- saveProcedure(db, n, outDir)
 	}
 }
 
+// saveAllProcedures saves all of the stored procedures with the names given to a subdirectory of
+// the outDir specified in the passed config. This sub directory will be named after the database
+// they are being read from.
+// workerCount goroutines will be used for fetching procure bodies from the database.
 func saveAllProcedures(names []string, workerCount int, db *sqlx.DB, conf config) (err error) {
 	// Ensure the output subdirectory exists
 	// Make the db subdirectory
@@ -176,6 +204,109 @@ func saveAllProcedures(names []string, workerCount int, db *sqlx.DB, conf config
 	return nil
 }
 
+// getRepo either gets the existing repo from the given path or initialise a new one.
+func getRepo(repoPath string) (repo *git.Repository, err error) {
+	// Return the repo if we have one already
+	repo, err = git.OpenRepository(repoPath)
+	// Or init a new one
+	if err != nil {
+		repo, err = git.InitRepository(repoPath, false)
+	}
+
+	return repo, err
+}
+
+// commitChanges creates a new commit containing all changes found in the given config's outDir.
+func commitChanges(repo *git.Repository, conf config) (err error) {
+	// Add all SP files to the index
+	idx, err := repo.Index()
+	if err != nil {
+		return err
+	}
+
+	changedFiles := make([]string, 0, 0)
+
+	idx.AddAll([]string{filepath.Join(conf.db.database, "*")}, git.IndexAddDefault, func(path, spec string) int {
+		changedFiles = append(changedFiles, path)
+		return 0
+	})
+	if err != nil {
+		return err
+	}
+
+	// If nothing has changed in the index, we can finish here
+	if len(changedFiles) == 0 {
+		fmt.Println("No changes to commit")
+		return nil
+	}
+
+	treeId, err := idx.WriteTree()
+	if err != nil {
+		return err
+	}
+
+	err = idx.Write()
+	if err != nil {
+		return err
+	}
+
+	// Get stuff we need to create a commit
+	tree, err := repo.LookupTree(treeId)
+	if err != nil {
+		return err
+	}
+
+	headCommit, err := getHeadCommit(repo)
+	if err != nil {
+		return err
+	}
+
+	signature := &git.Signature{
+		Name:  conf.gitName,
+		Email: conf.gitEmail,
+		When:  time.Now(),
+	}
+
+	message := buildCommitMessage(conf.db.database, changedFiles)
+
+	if headCommit != nil {
+		fmt.Printf("Committing updates to %v files\n", len(changedFiles))
+		_, err = repo.CreateCommit("refs/heads/master", signature, signature, message, tree, headCommit)
+	} else {
+		fmt.Printf("Creating initial commit containing %v files\n", len(changedFiles))
+		_, err = repo.CreateCommit("refs/heads/master", signature, signature, message, tree)
+	}
+
+	return err
+}
+
+// getHeadCommit gets the head commit from master for the given repo, or nil if the repo is empty
+func getHeadCommit(repo *git.Repository) (commit *git.Commit, err error) {
+	// Check if this is a new repo
+	_, err = repo.Head()
+	if err != nil && git.IsErrorCode(err, git.ErrUnbornBranch) {
+		return nil, nil
+	} else if err != nil {
+		return nil, err
+	}
+
+	master, err := repo.LookupBranch("master", git.BranchLocal)
+	if err != nil {
+		return nil, err
+	}
+
+	commit, err = repo.LookupCommit(master.Target())
+
+	return commit, err
+}
+
+// buildCommitMessage builds a commit message detailing which database the commit concerns and which
+// files have been changed
+func buildCommitMessage(database string, changedPaths []string) string {
+	pathsString := strings.Join(changedPaths, "\n")
+	return fmt.Sprintf("Update with procedures from database '%v'\n\nThese files have changed:\n\n%v", database, pathsString)
+}
+
 func main() {
 	flag.Parse()
 	checkFatal(conf.isValid())
@@ -188,4 +319,11 @@ func main() {
 	checkFatal(err)
 
 	checkFatal(saveAllProcedures(names, 5, db, conf))
+
+	// Get or init a git repo
+	repo, err := getRepo(conf.outDir)
+	checkFatal(err)
+
+	// Commit all changed files
+	checkFatal(commitChanges(repo, conf))
 }
