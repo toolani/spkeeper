@@ -25,7 +25,7 @@ With the requirements in place, spkeeper should be buildable by cloning this rep
 spkeeper can be used as follows:
 
 ```
-$ spkeeper -h 127.0.0.1 -d database_name -u db_username -p db_password -o /path/to/save/to -n "Git Username" -"git.email@example.com"
+$ spkeeper -h 127.0.0.1 -d database_name -u db_username -p db_password -o /path/to/save/to -n "Git Username" -e "git.email@example.com"
 ```
 
 The options are described in the table below.
