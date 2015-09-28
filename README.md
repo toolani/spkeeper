@@ -10,6 +10,8 @@ When run again on the same database, any changes that have been made to the data
 
 ## Requirements
 
+The [go] tool chain must be installed to build spkeeper.
+
 [libgit2][libgit2] must be available and your system must be configured such that go binaries can dynamically link against it.
 
 [FreeTDS][freetds] must be installed and configured for the databases you wish to use spkeeper with.
@@ -51,5 +53,6 @@ The output path itself will have a git repository initialised inside it (if one 
 - [ ] Handle stored procedures being deleted.
 - [ ] Allow control over which git branch is used.
 
+[go]: https://golang.org/
 [freetds]: http://www.freetds.org/
 [libgit2]: https://libgit2.github.com
