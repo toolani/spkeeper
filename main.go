@@ -132,11 +132,13 @@ func writeProcedureBody(db *sqlx.DB, name string, w io.Writer) (err error) {
 	for rows.Next() {
 		var text string
 		err = rows.Scan(&text)
-		checkFatal(err)
+		if err != nil {
+			return errors.New(fmt.Sprintf("%v: %v", name, err.Error()))
+		}
 
 		_, err = w.Write([]byte(text))
 		if err != nil {
-			return err
+			return errors.New(fmt.Sprintf("%v: %v", name, err.Error()))
 		}
 	}
 	return nil
