@@ -177,8 +177,13 @@ func saveAllProcedures(names []string, workerCount int, db *sqlx.DB, conf config
 		for i := 0; i < len(names); i++ {
 			err = <-results
 			if err != nil {
-				fmt.Fprintf(os.Stderr, err.Error())
-				atomic.AddUint64(&errCount, 1)
+				// Report but don't fail on an SP's body being unreadable
+				if strings.Contains(err.Error(), "sql: expected 2 destination arguments in Scan, not 1") {
+					fmt.Fprintf(os.Stderr, "Error reading SQL for %v\n", err.Error())
+				} else {
+					fmt.Fprintln(os.Stderr, err.Error())
+					atomic.AddUint64(&errCount, 1)
+				}
 			}
 		}
 
